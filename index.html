@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Black MIDI Authentic HUD Renderer</title>
+    <!-- Imports Arcade Pixel font matching OrangePaprika's HUD engine -->
+    <link href="https://googleapis.com" rel="stylesheet">
+</head>
+<body>
+
+    <div id="controls">
+        <div class="row">
+            <div class="file-input-wrapper">
+                <button class="btn-file">Import MIDI</button>
+                <input type="file" id="midi-file" accept=".mid,.midi">
+            </div>
+            <button id="btn-record" disabled>Render Video</button>
+            <div id="status-msg">Select a MIDI file to begin...</div>
+        </div>
+        
+        <!-- EXTENDED VISUAL TOGGLE AND OVERLAY MODIFIER PANEL -->
+        <div class="row customizer-row">
+            <div class="control-group">
+                <label>HUD Style:</label>
+                <select id="cfg-hud-style">
+                    <option value="cjc" selected>CJC Style (Impact)</option>
+                    <option value="orangepaprika">Oswald</option>
+                </select>
+            </div>
+            <div class="control-group check-group">
+                <input type="checkbox" id="cfg-bold" checked>
+                <label for="cfg-bold">Bold</label>
+            </div>
+            <div class="control-group check-group">
+                <input type="checkbox" id="cfg-use-stroke" checked>
+                <label for="cfg-use-stroke">Outline</label>
+            </div>
+            <div class="control-group">
+                <label>Color:</label>
+                <input type="color" id="cfg-text" value="#ffffff">
+            </div>
+            <div class="control-group">
+                <label>Stroke:</label>
+                <input type="number" id="cfg-stroke" value="6" min="1" max="15">
+            </div>
+            <div class="control-group">
+                <label>Size:</label>
+                <input type="number" id="cfg-size" value="36" min="12" max="64">
+            </div>
+            <div class="control-group">
+                <label>Spacing:</label>
+                <input type="number" id="cfg-spacing" value="42" min="15" max="100">
+            </div>
+        </div>
+    </div>
+
+    <canvas id="counter-canvas"></canvas>
+
+</body>
+</html>
+<style>
+    body, html { 
+        margin: 0; padding: 0; overflow: hidden; 
+        background: #00ff00; /* Solid Green for Chroma Keying */
+        font-family: monospace; 
+    }
+    canvas { display: block; width: 100vw; height: 100vh; background: #00ff00; }
+    #controls {
+        position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+        background: rgba(15, 15, 15, 0.93); padding: 15px 25px; border-radius: 8px; 
+        border: 1px solid #333; box-shadow: 0 4px 20px rgba(0,0,0,0.5); z-index: 10;
+        display: flex; flex-direction: column; gap: 12px;
+    }
+    .row { display: flex; align-items: center; gap: 15px; justify-content: center; }
+    .customizer-row { border-top: 1px solid #444; padding-top: 10px; gap: 15px; flex-wrap: wrap; }
+    .control-group { display: flex; align-items: center; gap: 6px; color: #aaa; font-size: 11px; font-weight: bold; }
+    .check-group { cursor: pointer; user-select: none; }
+    .check-group input { cursor: pointer; margin: 0; }
+    .check-group label { cursor: pointer; color: #fff; }
+    .control-group select { background: #222; border: 1px solid #444; color: #fff; padding: 4px; border-radius: 4px; cursor: pointer; }
+    .control-group input[type="color"] { background: none; border: none; width: 28px; height: 25px; cursor: pointer; }
+    .control-group input[type="number"] { width: 45px; background: #222; border: 1px solid #444; color: #fff; padding: 3px; border-radius: 4px; text-align: center; }
+    .file-input-wrapper { position: relative; overflow: hidden; display: inline-block; }
+    .btn-file, #btn-record {
+        background: #00f0ff; color: #000; border: none;
+        padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px;
+    }
+    #btn-record:disabled { background: #444; color: #888; cursor: not-allowed; }
+    .file-input-wrapper input[type=file] { font-size: 100px; position: absolute; left: 0; top: 0; opacity: 0; cursor: pointer; }
+    #status-msg { color: #fff; font-size: 14px; font-weight: bold; white-space: nowrap; }
+</style>
+<script>
+    const canvas = document.getElementById('counter-canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const statusMsg = document.getElementById('status-msg');
+    const recordBtn = document.getElementById('btn-record');
+
+    const config = {
+        hudStyle: document.getElementById('cfg-hud-style').value,
+        isBold: document.getElementById('cfg-bold').checked,
+        useStroke: document.getElementById('cfg-use-stroke').checked,
+        textColor: document.getElementById('cfg-text').value,
+        strokeWidth: parseInt(document.getElementById('cfg-stroke').value),
+        bgStyle: '#00ff00',
+        fontSize: parseInt(document.getElementById('cfg-size').value),
+        lineSpacing: parseInt(document.getElementById('cfg-spacing').value),
+        xOffset: 30,
+        yOffset: 45
+    };
+
+    document.getElementById('cfg-hud-style').addEventListener('change', (e) => config.hudStyle = e.target.value);
+    document.getElementById('cfg-bold').addEventListener('change', (e) => config.isBold = e.target.checked);
+    document.getElementById('cfg-use-stroke').addEventListener('change', (e) => config.useStroke = e.target.checked);
+    document.getElementById('cfg-text').addEventListener('input', (e) => config.textColor = e.target.value);
+    document.getElementById('cfg-stroke').addEventListener('input', (e) => config.strokeWidth = parseInt(e.target.value) || 0);
+    document.getElementById('cfg-size').addEventListener('input', (e) => config.fontSize = parseInt(e.target.value) || 28);
+    document.getElementById('cfg-spacing').addEventListener('input', (e) => config.lineSpacing = parseInt(e.target.value) || 38);
+
+    let notes = []; 
+    let songLengthSec = 0;
+    let startTime = 0;
+    let isPlaying = false;
+    let currentTicksTrack = 0;
+    let metrics = { totalNotes: 0, polyphony: 0, nps: 0, bpm: 120 };
+    
+    let mediaRecorder;
+    let recordedChunks = [];
+
+    function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = window.innerWidth * dpr;
+        canvas.height = window.innerHeight * dpr;
+        ctx.scale(dpr, dpr);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function binarySearchNoteIndex(array, targetTime) {
+        let low = 0, high = array.length - 1;
+        while (low <= high) {
+            let mid = (low + high) >> 1;
+            if (array[mid].time < targetTime) low = mid + 1;
+            else high = mid - 1;
+        }
+        return low;
+    }
+
+    function renderLoop() {
+        ctx.fillStyle = config.bgStyle;
+        ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+        if (isPlaying) {
+            const currentTime = (performance.now() - startTime) / 1000; 
+
+            if (currentTime > songLengthSec) {
+                isPlaying = false;
+                statusMsg.textContent = "Processing Finished.";
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+            }
+
+            metrics.totalNotes = binarySearchNoteIndex(notes, currentTime);
+            let polyphonyCount = 0;
+            let npsCount = 0;
+            const npsWindowEnd = currentTime + 1.0;       
+
+            let i = metrics.totalNotes;
+            while (i < notes.length) {
+                const note = notes[i];
+                if (note.time > npsWindowEnd) break; 
+
+                if (currentTime >= note.time && currentTime <= note.endTime) {
+                    polyphonyCount++;
+                }
+                if (note.time >= currentTime && note.time <= npsWindowEnd) {
+                    npsCount++;
+                }
+                i++;
+            }
+
+            metrics.polyphony = polyphonyCount;
+            metrics.nps = npsCount;
+            if (notes[metrics.totalNotes]) {
+                metrics.bpm = Math.round(notes[metrics.totalNotes].bpm);
+                currentTicksTrack = Math.floor(notes[metrics.totalNotes].ticks);
+            }
+        }
+
+        // FIXED: Swaps out naturally heavy Impact for Arial if Bold is unchecked
+        let baseFontName = "";
+        if (config.hudStyle === 'orangepaprika') {
+            baseFontName = "'Press Start 2P', monospace";
+        } else {
+            baseFontName = config.isBold ? "Impact, sans-serif" : "Arial, sans-serif";
+        }
+        
+        let boldPrefix = config.isBold ? "bold " : "";
+        ctx.font = `${boldPrefix}${config.fontSize}px ${baseFontName}`;
+        ctx.textBaseline = 'top';
+
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = config.strokeWidth;
+        ctx.lineJoin = 'miter'; 
+        ctx.miterLimit = 2;
+        ctx.fillStyle = config.textColor;
+
+        let displayLines = [];
+        if (config.hudStyle === 'cjc') {
+            displayLines = [
+                `Notes: ${metrics.totalNotes}`,
+                `NPS: ${metrics.nps}`,
+                `Polyphony: ${metrics.polyphony}`
+            ];
+        } else if (config.hudStyle === 'orangepaprika') {
+            displayLines = [
+                `Ticks: ${currentTicksTrack}`,
+                `Notes: ${metrics.totalNotes}`,
+                `NPS: ${metrics.nps}`,
+                `BPM: ${metrics.bpm}`
+            ];
+        }
+
+        displayLines.forEach((textLine, index) => {
+            let currentY = config.yOffset + (index * config.lineSpacing);
+            if (config.useStroke && config.strokeWidth > 0) {
+                ctx.strokeText(textLine, config.xOffset, currentY);
+            }
+            ctx.fillText(textLine, config.xOffset, currentY);
+        });
+
+        requestAnimationFrame(renderLoop);
+    }
+    function parseMidiFileDirectly(arrayBuffer) {
+        const data = new DataView(arrayBuffer);
+        let offset = 0;
+
+        let foundHeader = false;
+        while (offset + 14 <= data.byteLength) {
+            if (data.getUint8(offset) === 0x4D &&     
+                data.getUint8(offset + 1) === 0x54 && 
+                data.getUint8(offset + 2) === 0x68 && 
+                data.getUint8(offset + 3) === 0x64) { 
+                foundHeader = true;
+                break;
+            }
+            offset++;
+        }
+
+        if (!foundHeader) throw new Error('Invalid signature format. Not a valid MIDI track.');
+
+        const read4Chars = () => {
+            if (offset + 4 > data.byteLength) return "";
+            return String.fromCharCode(data.getUint8(offset++), data.getUint8(offset++), data.getUint8(offset++), data.getUint8(offset++));
+        };
+        const readUint32 = () => { if(offset+4 > data.byteLength) return 0; let val = data.getUint32(offset); offset += 4; return val; };
+        const readUint16 = () => { if(offset+2 > data.byteLength) return 0; let val = data.getUint16(offset); offset += 2; return val; };
+        const readVLQ = () => {
+            let value = 0, iterations = 0;
+            while (offset < data.byteLength) {
+                let b = data.getUint8(offset++);
+                value = (value << 7) | (b & 0x7F);
+                iterations++;
+                if (!(b & 0x80) || iterations > 4) return value;
+            }
+            return value;
+        };
+
+        read4Chars(); 
+        offset += 4;  
+        const format = readUint16();
+        const numTracks = readUint16();
+        const ticksPerBeat = readUint16();
+        if (ticksPerBeat === 0) throw new Error('Ticks Per Beat syntax layout error.');
+
+        let allTrackEvents = [];
+        for (let t = 0; t < numTracks; t++) {
+            if (offset >= data.byteLength) break;
+            if (read4Chars() !== 'MTrk') { offset += readUint32(); continue; }
+            let trackSize = readUint32();
+            let trackEndOffset = Math.min(offset + trackSize, data.byteLength);
+            let absoluteTicks = 0, runningStatus = 0;
+
+            while (offset < trackEndOffset) {
+                const prevOffset = offset;
+                absoluteTicks += readVLQ();
+                if (offset >= data.byteLength) break;
+                let status = data.getUint8(offset);
+                if (status & 0x80) { runningStatus = status; offset++; } else { status = runningStatus; }
+                let eventType = status & 0xF0;
+
+                if (eventType === 0x80 || eventType === 0x90) {
+                    let note = data.getUint8(offset++);
+                    let velocity = data.getUint8(offset++);
+                    let isNoteOn = (eventType === 0x90 && velocity > 0);
+                    allTrackEvents.push({ ticks: absoluteTicks, type: isNoteOn ? 'noteOn' : 'noteOff', note: note });
+                } else if (eventType === 0xA0 || eventType === 0xE0) { offset += 2; } 
+                else if (eventType === 0xB0 || eventType === 0xC0 || status === 0xD0) { offset += (eventType === 0xB0) ? 2 : 1; } 
+                else if (status === 0xFF) {
+                    let metaType = data.getUint8(offset++);
+                    let len = readVLQ();
+                    if (metaType === 0x51 && len >= 3) {
+                        let usPerBeat = (data.getUint8(offset) << 16) | (data.getUint8(offset+1) << 8) | data.getUint8(offset+2);
+                        allTrackEvents.push({ ticks: absoluteTicks, type: 'tempo', bpm: 60000000 / usPerBeat });
+                    }
+                    offset += len;
+                } else if (status === 0xF0 || status === 0xF7) { offset += readVLQ(); }
+                if (offset <= prevOffset) { offset++; }
+            }
+            offset = trackEndOffset;
+        }
+
+        allTrackEvents.sort((a, b) => a.ticks - b.ticks);
+        let parsedNotes = [], activeNotesMap = {}; 
+        let currentBPM = 120, currentSeconds = 0, currentTicks = 0;
+        
+        for (let ev of allTrackEvents) {
+            let deltaTicks = ev.ticks - currentTicks;
+            if (deltaTicks > 0) {
+                currentSeconds += (deltaTicks / ticksPerBeat) * (60 / currentBPM);
+                currentTicks = ev.ticks;
+            }
+            if (ev.type === 'tempo') {
+                currentBPM = ev.bpm;
+            } else if (ev.type === 'noteOn') {
+                let noteObj = { time: currentSeconds, endTime: currentSeconds + 0.35, bpm: currentBPM, ticks: ev.ticks }; 
+                parsedNotes.push(noteObj);
+                activeNotesMap[ev.note] = noteObj;
+            } else if (ev.type === 'noteOff') {
+                if (activeNotesMap[ev.note]) {
+                    activeNotesMap[ev.note].endTime = currentSeconds;
+                    delete activeNotesMap[ev.note];
+                }
+            }
+        }
+        return { notes: parsedNotes, length: currentSeconds };
+    }
+
+    document.getElementById('midi-file').addEventListener('change', async (e) => {
+        const file = e.target.files; 
+        if (!file || file.length === 0) return;
+        isPlaying = false; recordBtn.disabled = true;
+        statusMsg.textContent = "Reading file entries...";
+
+        try {
+            const buffer = await file.arrayBuffer(); 
+            statusMsg.textContent = "Processing tracks...";
+            const parsedMidi = parseMidiFileDirectly(buffer);
+            notes = parsedMidi.notes;
+            songLengthSec = parsedMidi.length;
+
+            statusMsg.textContent = `Loaded ${notes.length.toLocaleString()} notes successfully!`;
+            recordBtn.disabled = false;
+        } catch(err) {
+            statusMsg.textContent = "Error parsing file.";
+            alert("Parsing Error: " + err.message);
+        }
+    });
+
+    recordBtn.addEventListener('click', () => {
+        recordBtn.disabled = true; recordedChunks = [];
+        metrics = { totalNotes: 0, polyphony: 0, nps: 0, bpm: 120 };
+
+        const stream = canvas.captureStream(60); 
+        let options = { mimeType: 'video/mp4; codecs=avc1.42E01E' };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+            options = { mimeType: 'video/mp4' }; 
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm' }; 
+        }
+
+        mediaRecorder = new MediaRecorder(stream, options);
+        mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+            statusMsg.textContent = "Compiling MP4 video...";
+            const isWebm = options.mimeType.includes('webm');
+            const blob = new Blob(recordedChunks, { type: isWebm ? 'video/webm' : 'video/mp4' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `black_midi_counter_${Date.now()}.${isWebm ? 'webm' : 'mp4'}`; a.click();
+            statusMsg.textContent = "MP4 saved! Clear and check Files app.";
+            recordBtn.disabled = false;
+        };
+
+        startTime = performance.now(); isPlaying = true; mediaRecorder.start();
+        statusMsg.textContent = "Recording active canvas stream...";
+    });
+
+    renderLoop();
+</script>
+</body>
+</html>
